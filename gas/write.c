@@ -2177,6 +2177,10 @@ write_object_file (void)
 
   bfd_map_over_sections (stdoutput, size_seg, (char *) 0);
 
+#ifdef CRC_SUPPORT
+  tc_crc_finish ();
+#endif
+
   /* Relaxation has completed.  Freeze all syms.  */
   finalize_syms = 1;
 

@@ -128,4 +128,6 @@ extern void riscv_elf_final_processing (void);
 extern void riscv_md_end (void);
 extern int riscv_convert_symbolic_attribute (const char *);
 
+#define CRC_SUPPORT
+
 #endif /* TC_RISCV */

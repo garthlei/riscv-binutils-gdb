@@ -483,6 +483,101 @@ install_insn (const struct riscv_cl_insn *insn)
   number_to_chars_littleendian (f, insn->insn_opcode, insn_length (insn));
 }
 
+/* Routines and data structures related to CRC checking. */
+
+typedef struct crc_nodeS {
+  fragS *crc_fragp;
+  unsigned long crc_where;
+  fragS *cfc_fragp;
+  unsigned long cfc_where;
+  struct crc_nodeS *next;
+} crc_nodeS;
+
+typedef struct crc_listS {
+  crc_nodeS *head;
+  crc_nodeS *tail;
+  size_t num_nodes;
+
+  /* The location to write to. */
+  char *data;
+
+  /* The corresponding .text section. */
+  asection *text_section;
+
+  struct crc_listS *next;
+} crc_listS;
+
+/* CRC lists form a linked list, with CRC_LIST being the head. */
+static crc_listS *crc_list;
+
+static struct {
+  fragS *fragp;
+  unsigned long where;
+  asection *text_section;
+} cfc_latest;
+
+/* Initialize the CRC data structure of the current .text section. */
+
+static int
+crc_init (void)
+{
+  crc_listS *list = (crc_listS *) xcalloc (1, sizeof (crc_listS));
+
+  if (!list)
+    return -1;
+
+  list->next = crc_list;
+  list->text_section = now_seg;
+  crc_list = list;
+  
+  return 0;
+}
+
+/* Push the CRC item into the correct CRC list. If the CRC list has not yet
+   been built, call the initialization routine first. */
+
+static void
+crc_push (fragS *crc_fragp, unsigned long crc_where,
+          fragS *cfc_fragp, unsigned long cfc_where)
+{
+  crc_listS *list = crc_list;
+
+  while (list && list->text_section != now_seg)
+    list = list->next;
+
+  if (!list)
+    {
+      if (crc_init () < 0)
+        as_bad ("CRC initialization failed for section %s",
+            (now_seg && now_seg->name)
+            ? now_seg->name
+            : "(null)");
+      list = crc_list;
+    }
+
+  if (list->tail)
+    {
+      gas_assert (!list->tail->next && list->num_nodes);
+      list->tail->next = (crc_nodeS *) xmalloc (sizeof (crc_nodeS));
+      list->tail = list->tail->next;
+    }
+  else
+    {
+      gas_assert (!list->head && !list->num_nodes);
+      list->tail = (crc_nodeS *) xmalloc (sizeof (crc_nodeS));
+      list->head = list->tail;
+    }
+  list->num_nodes++;
+  list->tail->crc_fragp = crc_fragp;
+  list->tail->cfc_fragp = cfc_fragp;
+  list->tail->crc_where = crc_where;
+  list->tail->cfc_where = cfc_where;
+  list->tail->next = NULL;
+}
+
+#define INSN_CUSTOM_CRCSIG 0xab
+#define INSN_CTRLSIG_OPCODE 0xb
+
 /* Move INSN to offset WHERE in FRAG.  Adjust the fixups accordingly
    and install the opcode in the new location.  */
 
@@ -497,6 +592,18 @@ move_insn (struct riscv_cl_insn *insn, fragS *frag, long where)
       insn->fixp->fx_where = where;
     }
   install_insn (insn);
+  if ((insn->insn_opcode & OP_MASK_OP) == INSN_CTRLSIG_OPCODE) {
+    cfc_latest.fragp = frag;
+    cfc_latest.where = where;
+    cfc_latest.text_section = now_seg;
+  }
+  if (insn->insn_opcode == INSN_CUSTOM_CRCSIG)
+    {
+      if (now_seg != cfc_latest.text_section)
+        as_bad ("CRCSIG is not paired with a CTRLSIG "
+                "within the same section");
+      crc_push (frag, where, cfc_latest.fragp, cfc_latest.where);
+    }
 }
 
 /* Add INSN to the end of the output.  */
@@ -1029,6 +1136,20 @@ validate_riscv_insn (const struct riscv_opcode *opc, int length)
 	     return FALSE;
 	  }
 	break;
+      case 'N': /* cfc inst */
+  switch (c = *p++)
+	  {
+	    case 'd': USE_BITS (OP_MASK_SIGDIFF, OP_SH_SIGDIFF); break;
+	    case 's': USE_BITS (OP_MASK_SIGS, OP_SH_SIGS); break;
+      case 'D': USE_BITS (OP_MASK_SIGD, OP_SH_SIGD); break;
+      case 'c': USE_BITS (OP_MASK_CRC, OP_SH_CRC); break;
+	    default:
+	      as_bad (_("internal: bad RISC-V opcode"
+			" (unknown operand type `F%c'): %s %s"),
+		      c, opc->name, opc->args);
+	     return FALSE;
+	  }
+  break;
       default:
 	as_bad (_("internal: bad RISC-V opcode "
 		  "(unknown operand type `%c'): %s %s"),
@@ -2507,6 +2628,73 @@ riscv_ip (char *str, struct riscv_cl_insn *ip, expressionS *imm_expr,
 	      else
 		*imm_reloc = BFD_RELOC_RISCV_CALL;
 	      continue;
+      case 'N':
+        switch (*++args)
+    {
+    case 'd':
+		  if (my_getSmallExpression (imm_expr, imm_reloc, s, p)
+		      || imm_expr->X_op != O_constant
+		      || imm_expr->X_add_number < 0
+		      || imm_expr->X_add_number >= 256)
+		    {
+		      as_bad (_("bad value for imm8(d) field, "
+				"value must be 0...255"));
+		      break;
+		    }
+
+		  INSERT_OPERAND (SIGDIFF, *ip, imm_expr->X_add_number);
+		  imm_expr->X_op = O_absent;
+		  s = expr_end;
+		  continue;
+    case 's':
+		  if (my_getSmallExpression (imm_expr, imm_reloc, s, p)
+		      || imm_expr->X_op != O_constant
+		      || imm_expr->X_add_number < 0
+		      || imm_expr->X_add_number >= 256)
+		    {
+		      as_bad (_("bad value for imm8(s) field, "
+				"value must be 0...255"));
+		      break;
+		    }
+
+		  INSERT_OPERAND (SIGS, *ip, imm_expr->X_add_number);
+		  imm_expr->X_op = O_absent;
+		  s = expr_end;
+		  continue;
+    case 'D':
+		  if (my_getSmallExpression (imm_expr, imm_reloc, s, p)
+		      || imm_expr->X_op != O_constant
+		      || imm_expr->X_add_number < 0
+		      || imm_expr->X_add_number >= 256)
+		    {
+		      as_bad (_("bad value for imm8(D) field, "
+				"value must be 0...255"));
+		      break;
+		    }
+
+		  INSERT_OPERAND (SIGD, *ip, imm_expr->X_add_number);
+		  imm_expr->X_op = O_absent;
+		  s = expr_end;
+		  continue;
+    case 'c':
+		  if (my_getSmallExpression (imm_expr, imm_reloc, s, p)
+		      || imm_expr->X_op != O_constant
+		      || imm_expr->X_add_number < 0
+		      || imm_expr->X_add_number >= 0xffff)
+		    {
+		      as_bad (_("bad value for imm16(C) field, "
+				"value must be 0...65535"));
+		      break;
+		    }
+
+		  INSERT_OPERAND (CRC, *ip, imm_expr->X_add_number);
+		  imm_expr->X_op = O_absent;
+		  s = expr_end;
+		  continue;
+    default:
+		  as_bad (_("bad Opcode field specifier 'N%c'\n"), *args);
+    }
+        break;
 	    case 'O':
 	      switch (*++args)
 		{
@@ -3708,12 +3896,33 @@ riscv_set_public_attributes (void)
     riscv_write_out_attrs ();
 }
 
+/* Create CRC sections and fix their size. */
+
+static void
+crc_fix_size (void)
+{
+  crc_listS *list = crc_list;
+  char *buf;
+
+  while (list)
+    {
+      buf = (char *) xmalloc (sizeof ".crc" + strlen (list->text_section->name));
+      sprintf (buf, ".crc%s", list->text_section->name);
+      if (!subseg_new (buf, 0))
+        as_bad ("Failed to create CRC section %s", buf);
+      list->data = frag_more (list->num_nodes * 2 * sizeof (bfd_size_type));
+      frag_now->fr_fix = frag_now_fix_octets ();
+      list = list->next;
+    }
+}
+
 /* Called after all assembly has been done.  */
 
 void
 riscv_md_end (void)
 {
   riscv_set_public_attributes ();
+  crc_fix_size ();
 }
 
 /* Given a symbolic attribute NAME, return the proper integer value.
@@ -3822,4 +4031,59 @@ riscv_pop_insert (void)
   extern void pop_insert (const pseudo_typeS *);
 
   pop_insert (riscv_pseudo_table);
+}
+
+/* Dispose the CRC linked list with the head of NODE recursively. */
+
+static void
+crc_dispose (crc_nodeS *node)
+{
+  if (!node)
+    return;
+  if (node->next)
+    crc_dispose (node->next);
+  free (node);
+}
+
+/* Dispose the linked list LIST formed by CRC lists recursively. */
+
+static void
+crc_list_dispose (crc_listS *list)
+{
+  if (!list)
+    return;
+  if (list->next)
+    crc_list_dispose (list->next);
+  crc_dispose (list->head);
+  free (list);
+}
+
+/* Fill the contents of CRC sections and dispose internal CRC data
+   structures. */
+
+void
+tc_crc_finish (void)
+{
+  char *c;
+  crc_nodeS *p;
+  crc_listS *list;
+  bfd_size_type addr;
+
+  list = crc_list;
+
+  while (list)
+    {
+      c = list->data;
+      for (p = list->head; p; p = p->next, c += 2 * sizeof (bfd_size_type))
+  {
+    addr = p->crc_where + p->crc_fragp->fr_address;
+    number_to_chars_littleendian (c, addr, sizeof (bfd_size_type));
+    addr = p->cfc_where + p->cfc_fragp->fr_address;
+    number_to_chars_littleendian (c + sizeof (bfd_size_type),
+                                  addr, sizeof (bfd_size_type));
+  }
+      list = list->next;
+    }
+  
+  crc_list_dispose (crc_list);
 }

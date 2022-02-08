@@ -79,5 +79,9 @@ extern arelent *tc_gen_reloc (asection *, fixS *);
 extern arelent **tc_gen_reloc (asection *, fixS *);
 #endif
 
+#ifdef CRC_SUPPORT
+void    tc_crc_finish (void);
+#endif
+
 extern const char FLT_CHARS[];
 extern const char EXP_CHARS[];

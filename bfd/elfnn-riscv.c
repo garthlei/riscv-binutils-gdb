@@ -32,6 +32,7 @@
 #include "elf/riscv.h"
 #include "opcode/riscv.h"
 #include "objalloc.h"
+#include "crc.h"
 
 #ifdef HAVE_LIMITS_H
 #include <limits.h>
@@ -1903,6 +1904,216 @@ riscv_resolve_pcrel_lo_relocs (riscv_pcrel_relocs *p)
   return TRUE;
 }
 
+typedef struct crc_entryS {
+  bfd_size_type crc_addr;
+  bfd_size_type cfc_addr;
+} crc_entryS;
+
+/* A file can have multiple "file nodes" if it contains more than one
+	 .text section with CRC instructions. */
+typedef struct crc_filenodeS {
+  bfd *abfd;
+	const char *text_section_name;
+  crc_entryS *entries;
+  size_t length;
+  struct crc_filenodeS *next;
+} crc_filenodeS;
+
+typedef struct crc_filelistS {
+  crc_filenodeS *head;
+  crc_filenodeS *tail;
+  size_t num_nodes;
+} crc_filelistS;
+
+static crc_filelistS crc_filelist;
+
+/* Return the CRC file node for the section with the name NAME in ABFD. */
+
+static crc_filenodeS *
+crc_link_find (bfd *abfd, const char *name)
+{
+  crc_filenodeS *ptr = crc_filelist.head;
+
+  while (ptr)
+    {
+      if (ptr->abfd == abfd && !strcmp (name, ptr->text_section_name))
+  break;
+      ptr = ptr->next;
+    }
+    
+  return ptr;
+}
+
+/* Build a CRC file node. */
+
+static crc_filenodeS *
+crc_filenode_build (bfd *abfd, const char *name,
+    bfd_size_type size, void *data)
+{
+  crc_filenodeS *node = NULL;
+
+  node = (crc_filenodeS *) bfd_malloc (sizeof (crc_filenodeS));
+  if (!node)
+    return NULL;
+
+  node->abfd = abfd;
+  node->text_section_name = name;
+  node->next = NULL;
+  node->length = size / sizeof (crc_entryS);
+  node->entries = (crc_entryS *) bfd_malloc (size);
+
+  if (!node->entries)
+    {
+      free (node);
+      return NULL;
+    }
+
+  // This is based on the fact that the host (AMD64) is a little-endian
+  // machine. Otherwise, this can lead to trouble. A more universal way is
+  // to check the byte order of the host here.
+  memcpy (node->entries, data, size);
+  
+  return node;
+}
+
+/* Delete NODE from the CRC file node list. */
+
+static void
+crc_link_delete (crc_filenodeS *node)
+{
+  crc_filenodeS *pred;
+
+  if (!node)
+    return;
+
+  crc_filelist.num_nodes--;
+
+  if (node == crc_filelist.head)
+    crc_filelist.head = node->next;
+  
+  for (pred = crc_filelist.head; pred; pred = pred->next)
+    if (pred->next == node)
+      break;
+  
+  if (pred)
+    pred->next = node->next;
+}
+
+/* Dispose the CRC file node NODE. The node is also deleted from the linked
+   list. */
+
+static void
+crc_filenode_dispose (crc_filenodeS *node)
+{
+  if (!node)
+    return;
+  
+  if (node->entries)
+    free (node->entries);
+
+  crc_link_delete (node);
+  free (node);
+}
+
+/* Push a new file node into the CRC file node list. */
+
+static int
+crc_link_push (bfd *abfd, const char *name, bfd_size_type size, void *data)
+{
+  
+  if (crc_filelist.tail)
+    {
+      crc_filelist.tail->next = crc_filenode_build (abfd, name, size, data);
+      if (!crc_filelist.tail->next)
+  return -1;
+
+      crc_filelist.tail = crc_filelist.tail->next;
+    }
+  else
+    {
+      crc_filelist.tail = crc_filenode_build (abfd, name, size, data);
+      if (!crc_filelist.tail)
+  return -1;
+
+      crc_filelist.head = crc_filelist.tail;
+    }
+  crc_filelist.num_nodes++;
+  crc_filelist.tail->next = NULL;
+  return 0;
+}
+
+/* Fill all of the CRCSIG instructions in the .text section SEC */
+
+static void
+crc_link_final (asection *sec, bfd_byte *contents)
+{
+  crc_filenodeS *crc_filenode = crc_link_find (sec->owner, sec->name);
+  bfd_byte *begin, *end;
+  crc_t crc_res;
+  uint32_t crc_insn;
+  
+  unsigned int i;
+  
+  if (!crc_filenode)
+    return;
+
+  for (i = 0; i < crc_filenode->length; i++)
+    {
+      begin = contents + crc_filenode->entries[i].cfc_addr + sizeof (uint32_t);
+      end = contents + crc_filenode->entries[i].crc_addr;
+      crc_res = crc_init ();
+      while (begin < end)
+  {
+    uint32_t insn;
+    if ((*begin & 3) != 3)
+      {
+  /* An RVC instruction. */
+  insn = *(uint16_t *)begin;
+  begin += 2;
+      }
+    else
+      {
+  insn = *(uint32_t *)begin;
+  begin += 4;
+      }
+    crc_res = crc_update (crc_res, &insn, sizeof insn);
+  }
+      crc_res = crc_finalize (crc_res);
+      crc_insn = crc_res << 16 | MATCH_CRCSIG;
+      riscv_put_insn (32, crc_insn, end);
+    }
+
+  crc_filenode_dispose (crc_filenode);
+}
+
+static int
+crc_link_init (asection *sec)
+{
+  unsigned char *contents = NULL;
+  const char *text_section_name;
+
+  if (strncmp (sec->name, ".crc", sizeof ".crc" - 1))
+    return -1;
+
+  text_section_name = &sec->name[sizeof ".crc" - 1];
+
+  if (crc_link_find (sec->owner, text_section_name))
+    return 0;
+
+  if (!bfd_malloc_and_get_section (sec->owner, sec, &contents))
+    return -1;
+  
+  if (crc_link_push (sec->owner, text_section_name, sec->size, contents) < 0)
+    return -1;
+  
+  free (contents);
+
+  /* The CRC section should not be present in the executable. */
+  sec->flags |= SEC_EXCLUDE;
+  
+  return 0;
+}
+
 /* Relocate a RISC-V ELF section.
 
    The RELOCATE_SECTION function is called by the new ELF backend linker
@@ -2822,6 +3033,7 @@ riscv_elf_relocate_section (bfd *output_bfd,
 
   ret = riscv_resolve_pcrel_lo_relocs (&pcrel_relocs);
  out:
+  crc_link_final (input_section, contents);
   riscv_free_pcrel_relocs (&pcrel_relocs);
   return ret;
 }
@@ -3908,6 +4120,19 @@ riscv_relax_delete_bytes (bfd *abfd, asection *sec, bfd_vma addr, size_t count,
     if (data->relocs[i].r_offset > addr && data->relocs[i].r_offset < toaddr)
       data->relocs[i].r_offset -= count;
 
+  /* Adjust the location of CRC entries accordingly. */
+  crc_filenodeS *crc_filenode = crc_link_find (abfd, sec->name);
+  if (crc_filenode)
+  	{
+  	  for (i = 0; i < crc_filenode->length; i++)
+  {
+    if (crc_filenode->entries[i].cfc_addr > addr)
+      crc_filenode->entries[i].cfc_addr -= count;
+    if (crc_filenode->entries[i].crc_addr > addr)
+      crc_filenode->entries[i].crc_addr -= count;
+  }
+  	}
+
   /* Adjust the local symbols defined in this section.  */
   for (i = 0; i < symtab_hdr->sh_info; i++)
     {
@@ -4611,13 +4836,22 @@ _bfd_riscv_relax_delete (bfd *abfd,
 
 /* Relax a section.  Pass 0 shortens code sequences unless disabled.  Pass 1
    deletes the bytes that pass 0 made obselete.  Pass 2, which cannot be
-   disabled, handles code alignment directives.  */
+   disabled, handles code alignment directives.  It is also used as the backend
+   entry for CRC initialization. */
 
 static bfd_boolean
 _bfd_riscv_relax_section (bfd *abfd, asection *sec,
 			  struct bfd_link_info *info,
 			  bfd_boolean *again)
 {
+  /* It is a CRC initialization if info is nullptr. */
+  if (!info)
+    {
+      if (crc_link_init (sec) < 0)
+  return FALSE;
+      return TRUE;
+    }
+
   Elf_Internal_Shdr *symtab_hdr = &elf_symtab_hdr (abfd);
   struct riscv_elf_link_hash_table *htab = riscv_elf_hash_table (info);
   struct bfd_elf_section_data *data = elf_section_data (sec);

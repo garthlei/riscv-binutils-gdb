@@ -7258,6 +7258,15 @@ lang_place_orphans (void)
 	      /* This section of the file is not attached, root
 		 around for a sensible place for it to go.  */
 
+        /* CRC initialization. */
+        if (!strncmp (s->name, ".crc", sizeof ".crc" - 1))
+    {
+      if (bfd_link_relocatable (&link_info))
+        einfo (_("%F%P: partial linking is not supported with CRC sections"));
+      else if (bfd_relax_section (file->the_bfd, s, NULL, NULL) < 0)
+        einfo (_("%F%P: can't initialize CRC section %s\n"), s->name);
+    }
+
 	      if (file->flags.just_syms)
 		bfd_link_just_syms (file->the_bfd, s, &link_info);
 	      else if (lang_discard_section_p (s))
