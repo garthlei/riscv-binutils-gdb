@@ -409,6 +409,24 @@ print_insn_args (const char *d, insn_t l, bfd_vma pc, disassemble_info *info)
 	  print (info->stream, "%d", rs1);
 	  break;
 
+	case 'N':
+	  switch (*++d)
+	  {
+	    case 'd': /* signature difference */
+	      print (info->stream, "%d", (int)EXTRACT_OPERAND (SIGDIFF, l));
+        break;
+      case 's': /* signature */
+        print (info->stream, "%d", (int)EXTRACT_OPERAND (SIGS, l));
+        break;
+      case 'D': /* adjusting signature */
+        print (info->stream, "%d", (int)EXTRACT_OPERAND (SIGD, l));
+        break;
+      case 'c': /* CRC value */
+        print (info->stream, "0x%x", (int)EXTRACT_OPERAND (CRC, l));
+        break;
+	  }
+	  break;
+
 	default:
 	  /* xgettext:c-format */
 	  print (info->stream, _("# internal error, undefined modifier (%c)"),
