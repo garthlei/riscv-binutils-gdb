@@ -2045,7 +2045,7 @@ crc_link_push (bfd *abfd, const char *name, bfd_size_type size, void *data)
 /* Fill all of the CRCSIG instructions in the .text section SEC */
 
 static void
-crc_link_final (asection *sec, bfd_byte *contents)
+riscv_elf_crc_link_final (asection *sec, bfd_byte *contents)
 {
   crc_filenodeS *crc_filenode = crc_link_find (sec->owner, sec->name);
   bfd_byte *begin, *end;
@@ -2076,6 +2076,7 @@ crc_link_final (asection *sec, bfd_byte *contents)
   insn = *(uint32_t *)begin;
   begin += 4;
       }
+		
     crc_res = crc_update (crc_res, &insn, sizeof insn);
   }
       crc_res = crc_finalize (crc_res);
@@ -3033,7 +3034,6 @@ riscv_elf_relocate_section (bfd *output_bfd,
 
   ret = riscv_resolve_pcrel_lo_relocs (&pcrel_relocs);
  out:
-  crc_link_final (input_section, contents);
   riscv_free_pcrel_relocs (&pcrel_relocs);
   return ret;
 }
@@ -5238,6 +5238,7 @@ riscv_elf_obj_attrs_arg_type (int tag)
 #define elf_backend_adjust_dynamic_symbol    riscv_elf_adjust_dynamic_symbol
 #define elf_backend_size_dynamic_sections    riscv_elf_size_dynamic_sections
 #define elf_backend_relocate_section	     riscv_elf_relocate_section
+#define elf_backend_crc_link_final		 riscv_elf_crc_link_final
 #define elf_backend_finish_dynamic_symbol    riscv_elf_finish_dynamic_symbol
 #define elf_backend_finish_dynamic_sections  riscv_elf_finish_dynamic_sections
 #define elf_backend_gc_mark_hook	     riscv_elf_gc_mark_hook

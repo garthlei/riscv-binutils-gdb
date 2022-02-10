@@ -10774,6 +10774,7 @@ elf_link_input_bfd (struct elf_final_link_info *flinfo, bfd *input_bfd)
   int (*relocate_section)
     (bfd *, struct bfd_link_info *, bfd *, asection *, bfd_byte *,
      Elf_Internal_Rela *, Elf_Internal_Sym *, asection **);
+  void (*crc_link_final) (asection *, bfd_byte *);
   bfd *output_bfd;
   Elf_Internal_Shdr *symtab_hdr;
   size_t locsymcount;
@@ -10794,6 +10795,7 @@ elf_link_input_bfd (struct elf_final_link_info *flinfo, bfd *input_bfd)
   output_bfd = flinfo->output_bfd;
   bed = get_elf_backend_data (output_bfd);
   relocate_section = bed->elf_backend_relocate_section;
+  crc_link_final = bed->elf_backend_crc_link_final;
 
   /* If this is a dynamic object, we don't want to do anything here:
      we don't want the local symbols, and we don't want the section
@@ -11620,6 +11622,9 @@ elf_link_input_bfd (struct elf_final_link_info *flinfo, bfd *input_bfd)
 		}
 	    }
 	}
+
+      if (crc_link_final)
+        crc_link_final (o, contents);
 
       /* Write out the modified section contents.  */
       if (bed->elf_backend_write_section

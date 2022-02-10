@@ -669,6 +669,9 @@
 #ifndef elf_backend_mips_rtype_to_howto
 #define elf_backend_mips_rtype_to_howto		NULL
 #endif
+#ifndef elf_backend_crc_link_final
+#define elf_backend_crc_link_final		NULL
+#endif
 
 /* Previously, backends could only use SHT_REL or SHT_RELA relocation
    sections, but not both.  They defined USE_REL to indicate SHT_REL
@@ -893,6 +896,7 @@ static const struct elf_backend_data elfNN_bed =
   elf_backend_ecoff_debug_swap,
   elf_backend_bfd_from_remote_memory,
   elf_backend_core_find_build_id,
+  elf_backend_crc_link_final,
   elf_backend_plt_sym_val,
   elf_backend_common_definition,
   elf_backend_common_section_index,

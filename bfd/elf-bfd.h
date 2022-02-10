@@ -1434,6 +1434,9 @@ struct elf_backend_data
 
   bfd_boolean (*elf_backend_core_find_build_id) (bfd *, bfd_vma);
 
+  /* This function fills the CRCSIG instructions. */
+  void (*elf_backend_crc_link_final) (asection *, bfd_byte *);
+
   /* This function is used by `_bfd_elf_get_synthetic_symtab';
      see elf.c.  */
   bfd_vma (*plt_sym_val) (bfd_vma, const asection *, const arelent *);
