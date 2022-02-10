@@ -2077,7 +2077,7 @@ riscv_elf_crc_link_final (asection *sec, bfd_byte *contents)
       || (insn & MASK_C_BNEZ) == MATCH_C_BNEZ
       || (insn & MASK_C_JR) == MATCH_C_JR
       || (insn & MASK_C_JALR) == MATCH_C_JALR
-      || (insn & MASK_C_JAL) == MATCH_C_JAL)
+      || (ARCH_SIZE == 32 && (insn & MASK_C_JAL) == MATCH_C_JAL))
     {
       is_valid = FALSE;
       break;
