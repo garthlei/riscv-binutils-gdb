@@ -2062,8 +2062,14 @@ riscv_elf_crc_link_final (asection *sec, bfd_byte *contents)
     {
       begin = contents + crc_filenode->entries[i].cfc_addr + sizeof (uint32_t);
       end = contents + crc_filenode->entries[i].crc_addr;
+      if (begin > end)
+        {
+          _bfd_error_handler (_("%pB(%pA): warning: CRC instruction marked as"
+              " disabled, invalidating it"), sec->owner, sec);
+          riscv_put_insn (32, 0x13, end);   // NOP
+          continue;
+        }
       crc_res = crc_init ();
-      is_valid = TRUE;
       while (begin < end)
   {
     uint32_t insn;
@@ -2072,47 +2078,18 @@ riscv_elf_crc_link_final (asection *sec, bfd_byte *contents)
   /* An RVC instruction. */
   insn = *(uint16_t *)begin;
   begin += 2;
-  if ((insn & MASK_C_J) ==  MATCH_C_J
-      || (insn & MASK_C_BEQZ) == MATCH_C_BEQZ
-      || (insn & MASK_C_BNEZ) == MATCH_C_BNEZ
-      || (insn & MASK_C_JR) == MATCH_C_JR
-      || (insn & MASK_C_JALR) == MATCH_C_JALR
-      || (ARCH_SIZE == 32 && (insn & MASK_C_JAL) == MATCH_C_JAL))
-    {
-      is_valid = FALSE;
-      break;
-    }
       }
     else
       {
   insn = *(uint32_t *)begin;
   begin += 4;
-  if ((insn & MASK_BEQ) ==  MATCH_BEQ
-      || (insn & MASK_BNE) == MATCH_BNE
-      || (insn & MASK_BLT) == MATCH_BLT
-      || (insn & MASK_BGE) == MATCH_BGE
-      || (insn & MASK_BLTU) == MATCH_BLTU
-      || (insn & MASK_BGEU) == MATCH_BGEU
-      || (insn & MASK_JALR) == MATCH_JALR
-      || (insn & MASK_JAL) == MATCH_JAL)
-    {
-      is_valid = FALSE;
-      break;
-    }
       }
     crc_res = crc_update (crc_res, &insn, sizeof insn);
   }
 
       crc_res = crc_finalize (crc_res);
       crc_insn = crc_res << 16 | MATCH_CRCSIG;
-      if (is_valid)
-  riscv_put_insn (32, crc_insn, end);
-      else
-  {
-    _bfd_error_handler (_("%pB(%pA): warning: extra branch found in basic"
-        " block, invalidating CRC"), sec->owner, sec);
-    riscv_put_insn (32, 0x13, end);   // NOP
-  }
+      riscv_put_insn (32, crc_insn, end);
     }
 
   crc_filenode_dispose (crc_filenode);

@@ -474,6 +474,12 @@ create_insn (struct riscv_cl_insn *insn, const struct riscv_opcode *mo)
   insn->fixp = NULL;
 }
 
+static struct {
+  fragS *fragp;
+  unsigned long where;
+  asection *text_section;
+} cfc_latest;
+
 /* Install INSN at the location specified by its "frag" and "where" fields.  */
 
 static void
@@ -481,6 +487,28 @@ install_insn (const struct riscv_cl_insn *insn)
 {
   char *f = insn->frag->fr_literal + insn->where;
   number_to_chars_littleendian (f, insn->insn_opcode, insn_length (insn));
+
+  if ((insn_length (insn) == 2
+      && ((insn->insn_opcode & MASK_C_J) ==  MATCH_C_J
+          || (insn->insn_opcode & MASK_C_BEQZ) == MATCH_C_BEQZ
+          || (insn->insn_opcode & MASK_C_BNEZ) == MATCH_C_BNEZ
+          || (insn->insn_opcode & MASK_C_JR) == MATCH_C_JR
+          || (insn->insn_opcode & MASK_C_JALR) == MATCH_C_JALR
+          || (xlen == 32 && (insn->insn_opcode & MASK_C_JAL) == MATCH_C_JAL)))
+      || (insn_length (insn) == 4
+          && ((insn->insn_opcode & MASK_BEQ) ==  MATCH_BEQ
+              || (insn->insn_opcode & MASK_BNE) == MATCH_BNE
+              || (insn->insn_opcode & MASK_BLT) == MATCH_BLT
+              || (insn->insn_opcode & MASK_BGE) == MATCH_BGE
+              || (insn->insn_opcode & MASK_BLTU) == MATCH_BLTU
+              || (insn->insn_opcode & MASK_BGEU) == MATCH_BGEU
+              || (insn->insn_opcode & MASK_JALR) == MATCH_JALR
+              || (insn->insn_opcode & MASK_JAL) == MATCH_JAL)))
+    {
+      cfc_latest.fragp = NULL;
+      cfc_latest.where = 0;
+      cfc_latest.text_section = NULL;
+    }
 }
 
 /* Routines and data structures related to CRC checking. */
@@ -490,6 +518,7 @@ typedef struct crc_nodeS {
   unsigned long crc_where;
   fragS *cfc_fragp;
   unsigned long cfc_where;
+  insn_t crc_insn;
   struct crc_nodeS *next;
 } crc_nodeS;
 
@@ -509,12 +538,6 @@ typedef struct crc_listS {
 
 /* CRC lists form a linked list, with CRC_LIST being the head. */
 static crc_listS *crc_list;
-
-static struct {
-  fragS *fragp;
-  unsigned long where;
-  asection *text_section;
-} cfc_latest;
 
 /* Initialize the CRC data structure of the current .text section. */
 
@@ -537,10 +560,13 @@ crc_init (void)
    been built, call the initialization routine first. */
 
 static void
-crc_push (fragS *crc_fragp, unsigned long crc_where,
-          fragS *cfc_fragp, unsigned long cfc_where)
+crc_push (fragS *crc_fragp, unsigned long crc_where, insn_t crc_insn)
 {
   crc_listS *list = crc_list;
+
+  if (cfc_latest.text_section && now_seg != cfc_latest.text_section)
+    as_bad ("CRCSIG is not paired with a CTRLSIG "
+            "within the same section");
 
   while (list && list->text_section != now_seg)
     list = list->next;
@@ -569,13 +595,21 @@ crc_push (fragS *crc_fragp, unsigned long crc_where,
     }
   list->num_nodes++;
   list->tail->crc_fragp = crc_fragp;
-  list->tail->cfc_fragp = cfc_fragp;
+  list->tail->cfc_fragp = cfc_latest.fragp;
   list->tail->crc_where = crc_where;
-  list->tail->cfc_where = cfc_where;
+  list->tail->cfc_where = cfc_latest.where;
+  list->tail->crc_insn = crc_insn;
   list->tail->next = NULL;
+
+  if (!cfc_latest.fragp)
+    as_warn (_("Extra branch found in basic block, marking"
+        " relevant CRCSIG's as disabled"));
+
+  cfc_latest.fragp = NULL;
+  cfc_latest.where = 0;
+  cfc_latest.text_section = NULL;
 }
 
-#define INSN_CUSTOM_CRCSIG 0xab
 #define INSN_CTRLSIG_OPCODE 0xb
 
 /* Move INSN to offset WHERE in FRAG.  Adjust the fixups accordingly
@@ -593,17 +627,14 @@ move_insn (struct riscv_cl_insn *insn, fragS *frag, long where)
     }
   install_insn (insn);
   if ((insn->insn_opcode & OP_MASK_OP) == INSN_CTRLSIG_OPCODE) {
+    if (cfc_latest.fragp)
+      as_bad ("CTRLSIG is not paired with a CRCSIG");
     cfc_latest.fragp = frag;
     cfc_latest.where = where;
     cfc_latest.text_section = now_seg;
   }
-  if (insn->insn_opcode == INSN_CUSTOM_CRCSIG)
-    {
-      if (now_seg != cfc_latest.text_section)
-        as_bad ("CRCSIG is not paired with a CTRLSIG "
-                "within the same section");
-      crc_push (frag, where, cfc_latest.fragp, cfc_latest.where);
-    }
+  if ((insn->insn_opcode & MASK_CRCSIG) == MATCH_CRCSIG)
+    crc_push (frag, where, insn->insn_opcode);
 }
 
 /* Add INSN to the end of the output.  */
@@ -3896,20 +3927,31 @@ riscv_set_public_attributes (void)
     riscv_write_out_attrs ();
 }
 
-/* Create CRC sections and fix their size. */
+/* Create CRC sections and fix their size. Meanwhile, find the invalidated
+   CRC instructions and mark them as disabled. */
 
 static void
 crc_fix_size (void)
 {
   crc_listS *list = crc_list;
+  crc_nodeS *p, *q;
   char *buf;
 
   while (list)
     {
+      for (p = list->head; p; p = p->next)
+  if (!p->cfc_fragp)
+    for (q = list->head; q; q = q->next)
+      if (q->crc_insn == p->crc_insn)
+  {
+    q->cfc_fragp = NULL;
+    q->cfc_where = 0;
+  }
+      
       buf = (char *) xmalloc (sizeof ".crc" + strlen (list->text_section->name));
       sprintf (buf, ".crc%s", list->text_section->name);
       if (!subseg_new (buf, 0))
-        as_bad ("Failed to create CRC section %s", buf);
+  as_bad ("Failed to create CRC section %s", buf);
       list->data = frag_more (list->num_nodes * 2 * sizeof (bfd_size_type));
       frag_now->fr_fix = frag_now_fix_octets ();
       list = list->next;
@@ -4078,7 +4120,8 @@ tc_crc_finish (void)
   {
     addr = p->crc_where + p->crc_fragp->fr_address;
     number_to_chars_littleendian (c, addr, sizeof (bfd_size_type));
-    addr = p->cfc_where + p->cfc_fragp->fr_address;
+    if (p->cfc_fragp)
+      addr = p->cfc_where + p->cfc_fragp->fr_address;
     number_to_chars_littleendian (c + sizeof (bfd_size_type),
                                   addr, sizeof (bfd_size_type));
   }
