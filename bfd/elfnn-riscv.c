@@ -1925,6 +1925,8 @@ typedef struct crc_filelistS {
   size_t num_nodes;
 } crc_filelistS;
 
+static bfd_boolean crc_partial;
+
 static crc_filelistS crc_filelist;
 
 /* Return the CRC file node for the section with the name NAME in ABFD. */
@@ -2062,10 +2064,8 @@ riscv_elf_crc_link_final (asection *sec, bfd_byte *contents)
     {
       begin = contents + crc_filenode->entries[i].cfc_addr + sizeof (uint32_t);
       end = contents + crc_filenode->entries[i].crc_addr;
-      if (begin > end)
+      if (begin > end || crc_partial)
         {
-          _bfd_error_handler (_("%pB(%pA): warning: CRC instruction marked as"
-              " disabled, invalidating it"), sec->owner, sec);
           riscv_put_insn (32, 0x13, end);   // NOP
           continue;
         }
@@ -4853,10 +4853,12 @@ _bfd_riscv_relax_section (bfd *abfd, asection *sec,
 			  bfd_boolean *again)
 {
   /* It is a CRC initialization if info is nullptr. */
-  if (!info)
+  if (!again)
     {
       if (crc_link_init (sec) < 0)
   return FALSE;
+			if (bfd_link_relocatable (info))
+	crc_partial = TRUE;
       return TRUE;
     }
 

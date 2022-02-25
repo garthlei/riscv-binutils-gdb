@@ -7261,9 +7261,7 @@ lang_place_orphans (void)
         /* CRC initialization. */
         if (!strncmp (s->name, ".crc", sizeof ".crc" - 1))
     {
-      if (bfd_link_relocatable (&link_info))
-        einfo (_("%F%P: partial linking is not supported with CRC sections"));
-      else if (bfd_relax_section (file->the_bfd, s, NULL, NULL) < 0)
+      if (bfd_relax_section (file->the_bfd, s, &link_info, NULL) < 0)
         einfo (_("%F%P: can't initialize CRC section %s\n"), s->name);
     }
 

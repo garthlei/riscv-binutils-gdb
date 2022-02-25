@@ -601,9 +601,6 @@ crc_push (fragS *crc_fragp, unsigned long crc_where, insn_t crc_insn)
   list->tail->crc_insn = crc_insn;
   list->tail->next = NULL;
 
-  if (!cfc_latest.fragp)
-    as_warn (_("Extra branch found in basic block, marking"
-        " relevant CRCSIG's as disabled"));
 
   cfc_latest.fragp = NULL;
   cfc_latest.where = 0;
