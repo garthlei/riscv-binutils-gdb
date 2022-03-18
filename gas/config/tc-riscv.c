@@ -492,8 +492,10 @@ install_insn (const struct riscv_cl_insn *insn)
       && ((insn->insn_opcode & MASK_C_J) ==  MATCH_C_J
           || (insn->insn_opcode & MASK_C_BEQZ) == MATCH_C_BEQZ
           || (insn->insn_opcode & MASK_C_BNEZ) == MATCH_C_BNEZ
-          || (insn->insn_opcode & MASK_C_JR) == MATCH_C_JR
-          || (insn->insn_opcode & MASK_C_JALR) == MATCH_C_JALR
+          || ((insn->insn_opcode & MASK_C_JR) == MATCH_C_JR
+              && (insn->insn_opcode & (OP_MASK_RD << OP_SH_RD)) != 0)
+          || ((insn->insn_opcode & MASK_C_JALR) == MATCH_C_JALR
+              && (insn->insn_opcode & (OP_MASK_RD << OP_SH_RD)) != 0)
           || (xlen == 32 && (insn->insn_opcode & MASK_C_JAL) == MATCH_C_JAL)))
       || (insn_length (insn) == 4
           && ((insn->insn_opcode & MASK_BEQ) ==  MATCH_BEQ
